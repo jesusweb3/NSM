@@ -1,6 +1,5 @@
 # src/indicators/signal_manager.py
 import time
-from datetime import datetime
 from typing import Optional, Callable
 from src.indicators.config import NSMConfig
 from src.indicators.nsm_indicator import NSMIndicator, Signal
@@ -33,21 +32,14 @@ class SignalManager:
         if self.ready_callback:
             self.ready_callback()
 
-    def on_new_candle(self, timestamp: int, close_price: float) -> None:
+    def on_new_candle(self, _timestamp: int, close_price: float) -> None:
         try:
-            dt = datetime.fromtimestamp(timestamp / 1000)
-            logger.debug(f"Обработка свечи: {dt.strftime('%Y-%m-%d %H:%M:%S')}, цена: {close_price}")
+            logger.debug(f"Обработка свечи: цена: {close_price}")
 
-            # Добавляем свечу как live данные (не исторические)
-            self.nsm_indicator.add_candle(close_price, is_historical=False)
+            self.nsm_indicator.add_candle(close_price)
             self.candles_processed += 1
 
             current_value = self.nsm_indicator.get_current_value_rounded()
-            signal_time = dt.strftime('%H:%M:%S')
-
-            # Логируем NSM значение после каждой свечи для сравнения с TradingView
-            if current_value is not None:
-                logger.info(f"NSM: {current_value:.8f} | Цена: {close_price} | {signal_time}")
 
             if not self.nsm_indicator.is_ready():
                 logger.debug(f"Индикатор еще не готов. Обработано свечей: {self.candles_processed}")
@@ -59,15 +51,17 @@ class SignalManager:
                 self.signals_generated += 1
 
                 if current_signal == Signal.LONG:
-                    logger.info(f"🟢 LONG СИГНАЛ | {signal_time} | Цена: {close_price} | NSM: {current_value:.8f}")
+                    logger.info(f"🟢 LONG СИГНАЛ | NSM: {current_value:.8f} | Цена: {close_price}")
                 elif current_signal == Signal.SHORT:
-                    logger.info(f"🔴 SHORT СИГНАЛ | {signal_time} | Цена: {close_price} | NSM: {current_value:.8f}")
+                    logger.info(f"🔴 SHORT СИГНАЛ | NSM: {current_value:.8f} | Цена: {close_price}")
 
                 self.last_signal = current_signal
+            else:
+                if current_value is not None:
+                    logger.info(f"NSM: {current_value:.8f} | Цена: {close_price}")
 
             if self.candles_processed % 50 == 0:
-                logger.info(
-                    f"Статистика: обработано {self.candles_processed} свечей, сгенерировано {self.signals_generated} сигналов")
+                logger.info(f"Статистика: обработано {self.candles_processed} свечей, сгенерировано {self.signals_generated} сигналов")
 
         except Exception as e:
             logger.error(f"Ошибка при обработке свечи: {e}")
@@ -76,27 +70,21 @@ class SignalManager:
         try:
             self.start_time = time.time()
 
-            # Загружаем исторические данные
             logger.info("Загрузка исторических данных...")
             historical_candles = self.historical_loader.load_historical_candles()
 
-            # Инициализируем NSM индикатор историческими данными
             logger.info("Инициализация NSM индикатора историческими данными...")
-            for timestamp, close_price in historical_candles:
-                self.nsm_indicator.add_candle(close_price, is_historical=True)
+            for _timestamp, close_price in historical_candles:
+                self.nsm_indicator.add_candle(close_price)
 
-            # Завершаем историческую инициализацию
             self.nsm_indicator.finish_historical_loading()
 
-            # Проверяем готовность индикатора
             if self.nsm_indicator.is_ready():
-                logger.info(f"NSM индикатор готов к работе. Инициализирован {len(historical_candles)} свечами")
+                logger.info("NSM индикатор готов к работе.")
             else:
                 logger.warning("NSM индикатор не готов после инициализации историческими данными")
 
-            # Запускаем WebSocket для получения новых данных
             self.data_feed.start()
-
             logger.info("SignalManager успешно запущен. Ожидание данных...")
 
         except Exception as e:
