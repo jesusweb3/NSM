@@ -5,6 +5,7 @@ from typing import Optional, Callable
 from src.indicators.config import NSMConfig
 from src.indicators.nsm_indicator import NSMIndicator, Signal
 from src.indicators.data_feed import DataFeed
+from src.indicators.hist_data_load import HistoricalDataLoader
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -15,6 +16,7 @@ class SignalManager:
         self.config = config
         self.nsm_indicator = NSMIndicator(config)
         self.data_feed = DataFeed(config)
+        self.historical_loader = HistoricalDataLoader(config)
         self.last_signal: Optional[Signal] = None
         self.candles_processed = 0
         self.signals_generated = 0
@@ -36,24 +38,30 @@ class SignalManager:
             dt = datetime.fromtimestamp(timestamp / 1000)
             logger.debug(f"Обработка свечи: {dt.strftime('%Y-%m-%d %H:%M:%S')}, цена: {close_price}")
 
-            self.nsm_indicator.add_candle(close_price)
+            # Добавляем свечу как live данные (не исторические)
+            self.nsm_indicator.add_candle(close_price, is_historical=False)
             self.candles_processed += 1
+
+            current_value = self.nsm_indicator.get_current_value_rounded()
+            signal_time = dt.strftime('%H:%M:%S')
+
+            # Логируем NSM значение после каждой свечи для сравнения с TradingView
+            if current_value is not None:
+                logger.info(f"NSM: {current_value:.8f} | Цена: {close_price} | {signal_time}")
 
             if not self.nsm_indicator.is_ready():
                 logger.debug(f"Индикатор еще не готов. Обработано свечей: {self.candles_processed}")
                 return
 
             current_signal = self.nsm_indicator.get_signal()
-            current_value = self.nsm_indicator.get_current_value()
 
             if current_signal != Signal.NONE and current_signal != self.last_signal:
                 self.signals_generated += 1
-                signal_time = dt.strftime('%H:%M:%S')
 
                 if current_signal == Signal.LONG:
-                    logger.info(f"🟢 LONG СИГНАЛ | {signal_time} | Цена: {close_price} | NSM: {current_value:.6f}")
+                    logger.info(f"🟢 LONG СИГНАЛ | {signal_time} | Цена: {close_price} | NSM: {current_value:.8f}")
                 elif current_signal == Signal.SHORT:
-                    logger.info(f"🔴 SHORT СИГНАЛ | {signal_time} | Цена: {close_price} | NSM: {current_value:.6f}")
+                    logger.info(f"🔴 SHORT СИГНАЛ | {signal_time} | Цена: {close_price} | NSM: {current_value:.8f}")
 
                 self.last_signal = current_signal
 
@@ -67,9 +75,29 @@ class SignalManager:
     def start(self) -> None:
         try:
             self.start_time = time.time()
+
+            # Загружаем исторические данные
+            logger.info("Загрузка исторических данных...")
+            historical_candles = self.historical_loader.load_historical_candles()
+
+            # Инициализируем NSM индикатор историческими данными
+            logger.info("Инициализация NSM индикатора историческими данными...")
+            for timestamp, close_price in historical_candles:
+                self.nsm_indicator.add_candle(close_price, is_historical=True)
+
+            # Завершаем историческую инициализацию
+            self.nsm_indicator.finish_historical_loading()
+
+            # Проверяем готовность индикатора
+            if self.nsm_indicator.is_ready():
+                logger.info(f"NSM индикатор готов к работе. Инициализирован {len(historical_candles)} свечами")
+            else:
+                logger.warning("NSM индикатор не готов после инициализации историческими данными")
+
+            # Запускаем WebSocket для получения новых данных
             self.data_feed.start()
 
-            logger.info(f"SignalManager успешно запущен. Ожидание данных...")
+            logger.info("SignalManager успешно запущен. Ожидание данных...")
 
         except Exception as e:
             logger.error(f"Ошибка при запуске SignalManager: {e}")
